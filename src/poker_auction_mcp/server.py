@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
@@ -227,6 +228,37 @@ class GameClient:
 mcp = FastMCP("poker-auction")
 client = GameClient()
 
+# Bundled rules file lives next to this module so it ships with the wheel.
+_RULES_PATH = Path(__file__).with_name("rules.md")
+_FALLBACK_RULES = (
+    "# Bargain Poker\n\n"
+    "A multiplayer poker game where you bid in auctions to decide which cards "
+    "land on the shared board. Each round you get private hole cards plus 50 "
+    "credits; you spend credits winning 3-card lots (via open, silent, or dutch "
+    "auctions) and buying single-use jokers. The auction winner picks which lot "
+    "cards become community cards. After all auction cycles, the best 5-card "
+    "poker hand (2 hole cards + community cards) wins the round; first to 3 "
+    "rounds wins the game.\n\n"
+    "(Full rules file could not be loaded.)"
+)
+
+
+def _load_rules() -> str:
+    """Return the bundled Bargain Poker rules, or a short fallback if the file
+    can't be read."""
+    try:
+        return _RULES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return _FALLBACK_RULES
+
+
+@mcp.resource("game://rules", name="game-rules", mime_type="text/markdown")
+def game_rules() -> str:
+    """The rules of Bargain Poker: objective, round flow, the three auction
+    formats (open / silent / dutch), jokers, and the credit economy. Read this
+    to learn how to play before taking actions."""
+    return _load_rules()
+
 
 def _extract_lobby_id(lobby_url_or_id: str) -> str:
     """Accept either a raw lobby id or a frontend URL like
@@ -283,6 +315,15 @@ async def join_lobby(
         pass
     client.update_event.clear()
     return client.state.snapshot()
+
+
+@mcp.tool()
+async def get_game_rules() -> str:
+    """Return the rules of Bargain Poker as markdown: the objective, round flow,
+    the three auction formats (open / silent / dutch), jokers, and the credit
+    economy. Call this FIRST, before joining or taking any action, so you know
+    how to play. Same content as the `game://rules` resource."""
+    return _load_rules()
 
 
 @mcp.tool()

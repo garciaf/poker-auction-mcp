@@ -54,6 +54,7 @@ Override either with env vars in the MCP config if you want to point at a local 
 
 | Tool | When to call | What it does |
 |------|--------------|--------------|
+| `get_game_rules()` | First, before joining | Returns the full Bargain Poker rules as markdown (same content as the `game://rules` resource). Call this so the agent knows how to play before acting. |
 | `join_lobby(lobby_url_or_id, player_name, server_url?)` | Once, at the start | Connects to the server, joins the lobby, registers a player name. Accepts the full frontend URL (parses `?lobbyId=…`) or a bare id. |
 | `get_state()` | Anytime | Returns the full observable snapshot (screen, balance, hole_cards, jokers, current_bid, lots, shop, seq, …). |
 | `wait_for_update(timeout_seconds?, until_screen?, since_seq?)` | After any action | Blocks until the server pushes a state change. Use `until_screen` to wait for a specific phase, or `since_seq` to wait for any change after the last snapshot you saw. |
@@ -64,6 +65,12 @@ Override either with env vars in the MCP config if you want to point at a local 
 | `buy_joker(key)` | `screen == 'shop'` | Buys a joker (key must match one in `state.shop`). |
 | `get_notifications(clear?)` | Anytime | Drains queued chat / system messages. |
 | `disconnect_from_game()` | When done | Closes the socket. |
+
+## Resources exposed
+
+| Resource | What it returns |
+|----------|-----------------|
+| `game://rules` | The full Bargain Poker rules (objective, round flow, the three auction formats, jokers, credit economy). Served from [src/poker_auction_mcp/rules.md](src/poker_auction_mcp/rules.md). An agent should read this before playing. |
 
 ## Typical agent flow
 
@@ -77,6 +84,52 @@ Override either with env vars in the MCP config if you want to point at a local 
    - `shop` → optionally `buy_joker(key)`
    - `finance` → just observe `bonus`
 5. Loop on `wait_for_update()` between actions.
+
+## Game rules
+
+The canonical game rules live in **[src/poker_auction_mcp/rules.md](src/poker_auction_mcp/rules.md)** and are served to agents through the `game://rules` MCP resource (see *Resources exposed* above).
+
+> Edit the rules in `rules.md`, not here — that file is what the agent actually reads. This keeps the rules a deliberate, self-contained artifact rather than something that drifts when these docs are reworded.
+
+---
+
+# Development & Deployment
+
+## Debug WebSocket Events
+
+These events are intended for development tooling only (e.g. the debug bar in the client app). They are not part of the game flow.
+
+### `screenshot-requested` → `screenshot`
+
+Request a screenshot of the current game viewport.
+
+**Client emits:** `screenshot-requested` (no payload)
+
+**Server responds with:** `screenshot`
+
+| Field | Type | Description |
+|---|---|---|
+| `image` | `string` | JPEG image encoded as a base64 string (320×180, quality 0.6) |
+
+```json
+{ "image": "<base64-encoded-jpeg>" }
+```
+
+> The server waits for the current frame to finish rendering (`RenderingServer.frame_post_draw`) before capturing, so the screenshot always reflects the latest drawn frame.
+
+---
+
+### `game-state-requested` → `game-state-update`
+
+Request the full game state for the calling player.
+
+**Client emits:** `game-state-requested` (no payload)
+
+**Server responds with:** `game-state-update`
+
+Payload is the full `GameManager.get_game_state_for_player()` dictionary plus a `current_screen` key indicating which screen the player is currently on.
+
+
 
 ## Publishing (later)
 
