@@ -54,7 +54,6 @@ Override either with env vars in the MCP config if you want to point at a local 
 
 | Tool | When to call | What it does |
 |------|--------------|--------------|
-| `get_game_rules()` | First, before joining | Returns the full Bargain Poker rules as markdown (same content as the `game://rules` resource). Call this so the agent knows how to play before acting. |
 | `join_lobby(lobby_url_or_id, player_name, server_url?)` | Once, at the start | Connects to the server, joins the lobby, registers a player name. Accepts the full frontend URL (parses `?lobbyId=…`) or a bare id. |
 | `fetch_game_state(wait_seconds?, timeout_seconds?)` | After every action and whenever waiting | Asks the host for the authoritative game state AND a 320×180 screenshot of the viewport. Returns both as separate content blocks so the LLM can read the structured state and see the game. `wait_seconds` (default `0`, capped at `30`) sleeps before the request — set higher when waiting for others to act (e.g. `10` right after joining). |
 | `ready()` | Waiting room & after viewing hole cards | Emits `ready` — moves the game forward. |
@@ -67,17 +66,16 @@ Override either with env vars in the MCP config if you want to point at a local 
 
 ## Resources exposed
 
-| Resource | What it returns |
-|----------|-----------------|
-| `game://rules` | The full Bargain Poker rules (objective, round flow, the three auction formats, jokers, credit economy). Served from [src/poker_auction_mcp/rules.md](src/poker_auction_mcp/rules.md). An agent should read this before playing. |
-| `poker-auction://playbook` | The agent playbook: perception/action loop, per-screen decision table, silent-auction bidding strategy, common mistakes. Same content is auto-shipped to the LLM via the server's `instructions` field on `initialize`; this resource is for explicit re-attachment. |
+| Resource | Source file | What it returns |
+|----------|-------------|-----------------|
+| `poker-auction://rules` | [src/poker_auction_mcp/rules.md](src/poker_auction_mcp/rules.md) | The full Bargain Poker rules (objective, round flow, the three auction formats, jokers, credit economy). |
+| `poker-auction://playbook` | [src/poker_auction_mcp/playbook.md](src/poker_auction_mcp/playbook.md) | The agent playbook: perception/action loop, per-screen decision table, silent-auction bidding strategy, common mistakes. Same content is auto-shipped to the LLM via the server's `instructions` field on `initialize`; this resource is for explicit re-attachment. |
 
 ## Typical agent flow
 
-1. `get_game_rules()` — learn the rules of Bargain Poker.
-2. `join_lobby("http://localhost:5173/lobby?lobbyId=ABC123", "Claudius")`.
-3. `fetch_game_state(wait_seconds=10)` — give the game master time to start the round, then look at the structured state + screenshot.
-4. Act based on `state.screen`:
+1. `join_lobby("http://localhost:5173/lobby?lobbyId=ABC123", "Claudius")` — the playbook arrives automatically via `instructions`. If the LLM needs the underlying rules, attach `poker-auction://rules` as a resource.
+2. `fetch_game_state(wait_seconds=10)` — give the game master time to start the round, then look at the structured state + screenshot.
+3. Act based on `state.screen`:
    - `waiting-room` / `hole-cards` → `ready()`
    - `silent-auction` → `place_bid(amount)` (exactly once)
    - `open-auction` → `place_bid(amount)`
@@ -85,13 +83,13 @@ Override either with env vars in the MCP config if you want to point at a local 
    - `card-select` → `select_card(suit, rank)` from `state.lots`
    - `shop` → optionally `buy_joker(key)`
    - `finance` / `loading` → observe, no action
-5. `fetch_game_state(wait_seconds=0)` after each action; if the screen hasn't changed yet, call again with a higher `wait_seconds` (up to 30) until something moves. Loop.
+4. `fetch_game_state(wait_seconds=0)` after each action; if the screen hasn't changed yet, call again with a higher `wait_seconds` (up to 30) until something moves. Loop.
 
 ## Game rules
 
-The canonical game rules live in **[src/poker_auction_mcp/rules.md](src/poker_auction_mcp/rules.md)** and are served to agents through the `game://rules` MCP resource (see *Resources exposed* above).
+The canonical game rules live in **[src/poker_auction_mcp/rules.md](src/poker_auction_mcp/rules.md)** and are served to agents through the `poker-auction://rules` MCP resource (see *Resources exposed* above). The companion **[src/poker_auction_mcp/playbook.md](src/poker_auction_mcp/playbook.md)** holds the agent playbook — strategy, decision table, common mistakes — and ships via the server's `instructions` field plus the `poker-auction://playbook` resource.
 
-> Edit the rules in `rules.md`, not here — that file is what the agent actually reads. This keeps the rules a deliberate, self-contained artifact rather than something that drifts when these docs are reworded.
+> Edit those two markdown files, not these docs — they're what the agent actually reads. Keeping them as deliberate, self-contained artifacts prevents drift when the README is reworded.
 
 ---
 
