@@ -50,7 +50,7 @@ If you wait the full duration and the screen still hasn't changed, just call
 | `hole-cards`   | Read `state.hole_cards`. Plan the round. Call `ready()`. |
 | `silent-auction` | Decide your bid (see below). Call `place_bid(amount)` **exactly once**. |
 | `card-select`  | Pick the card from `state.lots` (a.k.a. `state.cards_for_bidding`) that maximizes your hand value given current `hole_cards + community_cards`. Call `select_card(suit, rank)`. |
-| `shop`         | Look at `state.shop`. If a joker is worth its `price`, call `buy_joker(key)`. Otherwise skip. |
+| `shop`         | Look at `state.shop`. If a joker is worth its `price`, call `buy_joker(key)`. To skip without buying, call `ready()` — that's how you signal you're done shopping. |
 | `finance`      | Passive screen — observe `state.bonus`. |
 
 After any action above, immediately call `fetch_game_state(wait_seconds=0)` to
