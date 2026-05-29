@@ -13,6 +13,7 @@ Protocol mirrors src/lib/socket.ts from the poker-auction-client repo:
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 import socketio
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 FLAT_EVENTS = {"join-lobby", "request-rejoin", "player-rejoined-as"}
 
@@ -48,6 +49,12 @@ class GameState:
     bonus: int = 0
     players: list[dict] = field(default_factory=list)
     notifications: list[dict] = field(default_factory=list)
+    # Authoritative fields, only populated by `game-state-update` responses.
+    community_cards: list[dict] = field(default_factory=list)
+    cards_for_bidding: list[dict] = field(default_factory=list)
+    other_players: list[dict] = field(default_factory=list)
+    round_number: int = 0
+    max_victory: int = 0
     seq: int = 0  # bumped on every mutation so wait_for_update can detect changes
 
     def snapshot(self) -> dict[str, Any]:
@@ -69,6 +76,11 @@ class GameState:
             "bonus": self.bonus,
             "players": self.players,
             "pending_notifications": len(self.notifications),
+            "community_cards": self.community_cards,
+            "cards_for_bidding": self.cards_for_bidding,
+            "other_players": self.other_players,
+            "round_number": self.round_number,
+            "max_victory": self.max_victory,
             "seq": self.seq,
         }
 
@@ -86,6 +98,10 @@ class GameClient:
         self.state = GameState()
         self.update_event = asyncio.Event()
         self.joined_event = asyncio.Event()
+        # Dedicated signals for request/response dev-tooling events.
+        self.game_state_event = asyncio.Event()
+        self.screenshot_event = asyncio.Event()
+        self.last_screenshot_b64: str | None = None
         self._register_handlers()
 
     # --- helpers ---------------------------------------------------------
@@ -141,6 +157,8 @@ class GameClient:
                     s.loading_message = None
                 if "bonus" in arg:
                     s.bonus = arg.get("bonus") or 0
+                if "current_bid" in arg:
+                    s.current_bid = arg.get("current_bid") or 0
                 if "cards" in arg:
                     s.lots = arg.get("cards") or []
                 if "hole_cards" in arg:
@@ -193,6 +211,36 @@ class GameClient:
                 s.notifications.append({"message": arg.get("message"), "author": arg.get("author")})
         elif event == "lobby-not-found":
             s.notifications.append({"message": "lobby-not-found", "author": "system"})
+        elif event == "game-state-update":
+            # Authoritative snapshot from the host. Merge into our cached state.
+            if isinstance(arg, dict):
+                cp = arg.get("current_player") or {}
+                s.player_id = cp.get("id") or s.player_id
+                s.name = cp.get("name") or s.name
+                s.color = cp.get("color") or s.color
+                if cp.get("balance") is not None: s.balance = cp["balance"]
+                if cp.get("rounds_won") is not None: s.rounds_won = cp["rounds_won"]
+                if cp.get("hole_cards") is not None: s.hole_cards = cp["hole_cards"]
+                if cp.get("jokers") is not None: s.jokers = cp["jokers"]
+                if arg.get("current_screen"): s.screen = arg["current_screen"]
+                if arg.get("community_cards") is not None: s.community_cards = arg["community_cards"]
+                if arg.get("cards_for_bidding") is not None:
+                    s.cards_for_bidding = arg["cards_for_bidding"]
+                    # `cards_for_bidding` is the source of truth for `lots` (card-select choices).
+                    s.lots = arg["cards_for_bidding"]
+                if arg.get("jokers_for_sale") is not None: s.shop = arg["jokers_for_sale"]
+                # Note the server typo: `others_players` (not `other_players`).
+                others = arg.get("others_players")
+                if others is None:
+                    others = arg.get("other_players")
+                if others is not None: s.other_players = others
+                if arg.get("round_number") is not None: s.round_number = arg["round_number"]
+                if arg.get("max_victory") is not None: s.max_victory = arg["max_victory"]
+            self.game_state_event.set()
+        elif event == "screenshot":
+            if isinstance(arg, dict):
+                self.last_screenshot_b64 = arg.get("image")
+            self.screenshot_event.set()
         self._bump()
 
     # --- outgoing --------------------------------------------------------
@@ -225,7 +273,129 @@ class GameClient:
 
 # --- MCP wiring -------------------------------------------------------------
 
-mcp = FastMCP("poker-auction")
+PLAYBOOK = """\
+# How to play: poker-auction (silent-auction edition)
+
+You are a player at a multi-round poker-auction table. Each round you receive
+two private hole cards. Community cards are auctioned one at a time by **silent
+auction** (sealed-bid, single shot, highest bid wins, losers see nothing). At
+the end of each round, the best 5-card hand from `hole_cards + community_cards`
+wins the round. First player to reach `max_victory` rounds wins overall.
+
+## The perception/action loop
+
+You only have one perception tool: `fetch_game_state`. It returns BOTH the
+structured game state AND a screenshot of the host's viewport on every call.
+Call it before every decision — it is always ground truth.
+
+```
+join_lobby(lobby_url_or_id, player_name)
+[state, image] = fetch_game_state(wait_seconds=10)   # game master needs time to start
+loop forever:
+    act based on state.screen  (see decision table below)
+    [state, image] = fetch_game_state(wait_seconds=?)
+```
+
+### How to choose `wait_seconds`
+
+The default is `0` — fetch immediately. But increase it whenever you have
+nothing useful to do but wait:
+
+- **First call after `join_lobby`: use `10`.** The game master usually needs
+  several seconds to start the round; fetching immediately just shows you the
+  empty waiting room.
+- **After an action when you've passed the turn to another player** (e.g.
+  finished placing your silent bid): use `5–10`. Avoids spamming the server
+  while opponents are still deciding.
+- **You just fetched and the screen hasn't changed yet** — same screen, not
+  your turn: bump `wait_seconds` up gradually (e.g. 5 → 10 → 20). Never above
+  30. The tool will cap higher values at 30 anyway.
+- **You just took an action and expect immediate progress** (e.g. `ready()`
+  in waiting-room when you're the only one left): `1–2` is enough.
+- **You want to look right now** (debugging, sanity check): `0`.
+
+If you wait the full duration and the screen still hasn't changed, just call
+`fetch_game_state` again with a larger wait. No need to escalate quickly.
+
+## Decision table
+
+| `state.screen` | What to do |
+|----------------|------------|
+| `waiting-room` | Call `ready()`. |
+| `loading`      | Do nothing — just fetch again. |
+| `hole-cards`   | Read `state.hole_cards`. Plan the round. Call `ready()`. |
+| `silent-auction` | Decide your bid (see below). Call `place_bid(amount)` **exactly once**. |
+| `card-select`  | Pick the card from `state.lots` (a.k.a. `state.cards_for_bidding`) that maximizes your hand value given current `hole_cards + community_cards`. Call `select_card(suit, rank)`. |
+| `shop`         | Look at `state.shop`. If a joker is worth its `price`, call `buy_joker(key)`. Otherwise skip. |
+| `finance`      | Passive screen — observe `state.bonus`. |
+
+After any action above, immediately call `fetch_game_state(wait_seconds=0)` to
+see the result. Only add a wait time if the *next* fetch shows the same screen
+you just acted on (meaning other players or the host haven't advanced yet).
+
+## Silent-auction bidding strategy
+
+A silent auction is blind: nobody sees competitors' bids. The `current_bid`
+value in state is the **minimum** bid (floor), not a competing bid — ignore it
+except as a lower bound.
+
+A workable starting heuristic:
+
+```
+hand_strength = ...   # 0.0 to 1.0 based on hole_cards + revealed community
+urgency       = round_number / max_victory     # ramps up over the match
+max_bid       = floor(balance * hand_strength * (1 + urgency) / 2)
+bid           = max(minimum_bid, max_bid)      # never below floor
+```
+
+**Hard rules**:
+- Never bid above your `max_bid`.
+- Never call `place_bid` twice in the same auction. If you've already bid,
+  just wait for the screen to change.
+- If `balance < 5`, bid the minimum and conserve chips for stronger hands.
+- Stronger hands deserve disproportionately more — bid quadratically, not
+  linearly, with `hand_strength`.
+
+## Hand-strength quick guide
+
+Rough 0–1 scale you can use until you have data:
+
+- Pocket pair AA / KK / QQ: 0.9
+- Pocket pair JJ / TT: 0.7
+- Pocket pair 88-99: 0.55
+- Suited connectors (T-9s+): 0.5
+- Two high cards (AK, AQ, KQ): 0.6
+- One ace + low kicker: 0.35
+- Two unconnected low cards: 0.15
+
+Once community cards start appearing, re-evaluate using actual made hands
+(pair, two pair, straight draw, flush draw, …).
+
+## Using the screenshot
+
+Every `fetch_game_state` call returns a 320×180 JPEG of what the host sees.
+Use it to:
+- Verify the `screen` value matches what's actually on display.
+- Spot animations or UI states the structured payload doesn't capture.
+- Sanity-check before bidding (am I really in the auction screen?).
+
+Don't make decisions purely from the image — the structured state is the
+authoritative source. The image is for cross-checking and recovery.
+
+## Common mistakes to avoid
+
+1. Calling `place_bid` more than once per silent auction — you committed your
+   number, that's final.
+2. Calling `fetch_game_state` repeatedly with `wait_seconds=0` while the
+   screen hasn't changed — spams the server. Increase `wait_seconds` (up to
+   30) instead.
+3. Bidding when `state.screen != "silent-auction"` — the call will be rejected
+   or ignored. Always read screen first.
+4. Selecting a card not in `state.lots` — only cards in the lots are valid.
+5. Forgetting `ready()` after viewing hole cards — the game pauses on you.
+"""
+
+mcp = FastMCP("poker-auction", instructions=PLAYBOOK)
 client = GameClient()
 
 # Bundled rules file lives next to this module so it ships with the wheel.
@@ -258,6 +428,17 @@ def game_rules() -> str:
     formats (open / silent / dutch), jokers, and the credit economy. Read this
     to learn how to play before taking actions."""
     return _load_rules()
+
+
+@mcp.resource("poker-auction://playbook")
+def playbook_resource() -> str:
+    """Full playbook explaining the perception/action loop, the per-screen
+    decision table, silent-auction bidding strategy, and common mistakes.
+    The same text is sent as server instructions on initialize, so most LLM
+    clients already have it — this resource is for explicit reference. For
+    the underlying game rules (objective, auction formats, jokers), see the
+    `game://rules` resource instead."""
+    return PLAYBOOK
 
 
 def _extract_lobby_id(lobby_url_or_id: str) -> str:
@@ -327,58 +508,6 @@ async def get_game_rules() -> str:
 
 
 @mcp.tool()
-async def get_state() -> dict:
-    """Return the current observable game state: screen, balance, hole cards,
-    jokers, current bid, available lots (cards to pick), shop offerings, and
-    a monotonic `seq` counter you can pass to wait_for_update."""
-    return client.state.snapshot()
-
-
-@mcp.tool()
-async def wait_for_update(
-    timeout_seconds: float = 30.0,
-    until_screen: str | None = None,
-    since_seq: int | None = None,
-) -> dict:
-    """Block until the game state changes, then return the new snapshot.
-
-    Use this after taking an action (or after joining) to wait for the server's
-    next event — a screen change, a new bid, an updated balance, etc.
-
-    Args:
-        timeout_seconds: Max time to wait. Returns current state on timeout.
-        until_screen: If set, keep waiting until state.screen == this value.
-        since_seq: If set, return as soon as state.seq > since_seq.
-            Pass the `seq` from your last get_state to avoid missing fast updates.
-    """
-    if since_seq is not None and client.state.seq > since_seq:
-        return client.state.snapshot()
-    if until_screen is not None and client.state.screen == until_screen:
-        return client.state.snapshot()
-
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    while True:
-        remaining = deadline - asyncio.get_event_loop().time()
-        if remaining <= 0:
-            break
-        client.update_event.clear()
-        try:
-            await asyncio.wait_for(client.update_event.wait(), timeout=remaining)
-        except asyncio.TimeoutError:
-            break
-        if until_screen is not None:
-            if client.state.screen == until_screen:
-                break
-            continue
-        if since_seq is not None:
-            if client.state.seq > since_seq:
-                break
-            continue
-        break
-    return client.state.snapshot()
-
-
-@mcp.tool()
 async def ready() -> dict:
     """Signal that the agent is ready to proceed. Used in the waiting room
     (to start the game) and after viewing dealt hole cards."""
@@ -440,6 +569,76 @@ async def get_notifications(clear: bool = True) -> list[dict]:
     if clear:
         client.state.notifications.clear()
     return items
+
+
+@mcp.tool()
+async def fetch_game_state(
+    wait_seconds: float = 0.0,
+    timeout_seconds: float = 10.0,
+) -> list:
+    """Look at the game right now: returns the authoritative structured state
+    AND a screenshot of the host's viewport so the agent can both reason about
+    the JSON state and visually see what's on the player's screen.
+
+    This is the canonical "perceive the game" call. It always asks the host for
+    ground truth — there is no cached fast path. Call this before every decision.
+
+    Args:
+        wait_seconds: How long to sleep BEFORE fetching. Defaults to 0 (fetch
+            immediately). Set this higher when you have nothing to do but wait
+            for other players or for the game to advance:
+              - Right after `join_lobby`: use ~10 (game master may need time
+                to start the round).
+              - After an action when it's another player's turn: 5-15.
+              - When you keep seeing the same screen and it's clearly not your
+                turn: increase gradually, but never above 30.
+            Hard-capped at 30 seconds. The MCP will not sleep longer than that
+            in a single call — if you need more, call again.
+        timeout_seconds: Max time to wait for the server's two replies after
+            the sleep elapses.
+
+    Internally emits `game-state-requested` and `screenshot-requested` in
+    parallel, awaits both, merges the structured response into local state,
+    and returns:
+      - a text block containing the full game-state dict (screen, hole_cards,
+        community_cards, cards_for_bidding, jokers, shop, balance, current_bid,
+        round_number, max_victory, other_players, …)
+      - an image block with the 320x180 JPEG the host just rendered
+
+    Raises if either reply doesn't arrive in `timeout_seconds`.
+    """
+    # Hard cap to keep a single call from blocking for too long.
+    wait_seconds = max(0.0, min(wait_seconds, 30.0))
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+
+    client.game_state_event.clear()
+    client.screenshot_event.clear()
+    client.last_screenshot_b64 = None
+
+    # Fire both requests, then wait for both replies in parallel.
+    await client.emit("game-state-requested", {})
+    await client.emit("screenshot-requested", {})
+
+    results = await asyncio.gather(
+        asyncio.wait_for(client.game_state_event.wait(), timeout=timeout_seconds),
+        asyncio.wait_for(client.screenshot_event.wait(), timeout=timeout_seconds),
+        return_exceptions=True,
+    )
+    state_err, screenshot_err = results
+    if isinstance(state_err, BaseException):
+        raise RuntimeError(
+            f"No `game-state-update` reply within {timeout_seconds}s. "
+            "Make sure you are joined to a lobby."
+        )
+    if isinstance(screenshot_err, BaseException) or not client.last_screenshot_b64:
+        # Game state is fine, just no image — return state alone rather than fail.
+        return [client.state.snapshot()]
+
+    return [
+        client.state.snapshot(),
+        Image(data=base64.b64decode(client.last_screenshot_b64), format="jpeg"),
+    ]
 
 
 @mcp.tool()

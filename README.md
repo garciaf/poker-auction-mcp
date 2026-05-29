@@ -56,8 +56,7 @@ Override either with env vars in the MCP config if you want to point at a local 
 |------|--------------|--------------|
 | `get_game_rules()` | First, before joining | Returns the full Bargain Poker rules as markdown (same content as the `game://rules` resource). Call this so the agent knows how to play before acting. |
 | `join_lobby(lobby_url_or_id, player_name, server_url?)` | Once, at the start | Connects to the server, joins the lobby, registers a player name. Accepts the full frontend URL (parses `?lobbyId=…`) or a bare id. |
-| `get_state()` | Anytime | Returns the full observable snapshot (screen, balance, hole_cards, jokers, current_bid, lots, shop, seq, …). |
-| `wait_for_update(timeout_seconds?, until_screen?, since_seq?)` | After any action | Blocks until the server pushes a state change. Use `until_screen` to wait for a specific phase, or `since_seq` to wait for any change after the last snapshot you saw. |
+| `fetch_game_state(wait_seconds?, timeout_seconds?)` | After every action and whenever waiting | Asks the host for the authoritative game state AND a 320×180 screenshot of the viewport. Returns both as separate content blocks so the LLM can read the structured state and see the game. `wait_seconds` (default `0`, capped at `30`) sleeps before the request — set higher when waiting for others to act (e.g. `10` right after joining). |
 | `ready()` | Waiting room & after viewing hole cards | Emits `ready` — moves the game forward. |
 | `place_bid(amount)` | `screen == 'open-auction'` or `'silent-auction'` | Submits a bid. |
 | `accept_dutch_offer()` | `screen == 'dutch-auction'` | Buys at the currently displayed (descending) price. |
@@ -71,19 +70,22 @@ Override either with env vars in the MCP config if you want to point at a local 
 | Resource | What it returns |
 |----------|-----------------|
 | `game://rules` | The full Bargain Poker rules (objective, round flow, the three auction formats, jokers, credit economy). Served from [src/poker_auction_mcp/rules.md](src/poker_auction_mcp/rules.md). An agent should read this before playing. |
+| `poker-auction://playbook` | The agent playbook: perception/action loop, per-screen decision table, silent-auction bidding strategy, common mistakes. Same content is auto-shipped to the LLM via the server's `instructions` field on `initialize`; this resource is for explicit re-attachment. |
 
 ## Typical agent flow
 
-1. `join_lobby("http://localhost:5173/lobby?lobbyId=ABC123", "Claudius")`
-2. `wait_for_update(until_screen="hole-cards")` — game master starts the round
-3. Inspect `hole_cards`, then `ready()`
-4. `wait_for_update()` — the next screen tells the agent what to do:
-   - `open-auction` / `silent-auction` → `place_bid(amount)`
-   - `dutch-auction` → `accept_dutch_offer()` when the price is right
+1. `get_game_rules()` — learn the rules of Bargain Poker.
+2. `join_lobby("http://localhost:5173/lobby?lobbyId=ABC123", "Claudius")`.
+3. `fetch_game_state(wait_seconds=10)` — give the game master time to start the round, then look at the structured state + screenshot.
+4. Act based on `state.screen`:
+   - `waiting-room` / `hole-cards` → `ready()`
+   - `silent-auction` → `place_bid(amount)` (exactly once)
+   - `open-auction` → `place_bid(amount)`
+   - `dutch-auction` → `accept_dutch_offer()`
    - `card-select` → `select_card(suit, rank)` from `state.lots`
    - `shop` → optionally `buy_joker(key)`
-   - `finance` → just observe `bonus`
-5. Loop on `wait_for_update()` between actions.
+   - `finance` / `loading` → observe, no action
+5. `fetch_game_state(wait_seconds=0)` after each action; if the screen hasn't changed yet, call again with a higher `wait_seconds` (up to 30) until something moves. Loop.
 
 ## Game rules
 
