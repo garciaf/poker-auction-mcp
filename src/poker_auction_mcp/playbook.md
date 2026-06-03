@@ -13,29 +13,28 @@ structured game state AND a screenshot of the host's viewport on every call.
 Call it before every decision — it is always ground truth.
 
 ```
-join_lobby(lobby_url_or_id, player_name)
-[state, image] = fetch_game_state(wait_seconds=10)   # game master needs time to start
+join_lobby(lobby_url_or_id, player_name)         # auto-readies for you
+[state, image] = fetch_game_state(wait_seconds=0)
 loop forever:
     act based on state.screen  (see decision table below)
     [state, image] = fetch_game_state(wait_seconds=?)
 ```
 
+> `join_lobby` automatically emits the post-join `ready` signal for you. You do
+> not need to call `ready()` manually for the initial waiting-room phase — the
+> first `fetch_game_state` will already show the round in progress (or the
+> host visibly starting it).
+
 ### How to choose `wait_seconds`
 
-The default is `0` — fetch immediately. But increase it whenever you have
-nothing useful to do but wait:
+The default is `0` — fetch immediately. **Always start with `0`** and only
+increase it when a fetch shows the screen hasn't progressed:
 
-- **First call after `join_lobby`: use `10`.** The game master usually needs
-  several seconds to start the round; fetching immediately just shows you the
-  empty waiting room.
 - **After an action when you've passed the turn to another player** (e.g.
-  finished placing your silent bid): use `5–10`. Avoids spamming the server
-  while opponents are still deciding.
-- **You just fetched and the screen hasn't changed yet** — same screen, not
-  your turn: bump `wait_seconds` up gradually (e.g. 5 → 10 → 20). Never above
-  30. The tool will cap higher values at 30 anyway.
-- **You just took an action and expect immediate progress** (e.g. `ready()`
-  in waiting-room when you're the only one left): `1–2` is enough.
+  finished placing your silent bid): start at `0`, then if the screen hasn't
+  moved, bump to `5–10`.
+- **Same screen twice in a row, clearly not your turn**: escalate gradually
+  (e.g. 5 → 10 → 20). Never above 30 — the tool caps higher values at 30.
 - **You want to look right now** (debugging, sanity check): `0`.
 
 If you wait the full duration and the screen still hasn't changed, just call

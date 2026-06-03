@@ -13,7 +13,8 @@ Protocol mirrors src/lib/socket.ts from the poker-auction-client repo:
 from __future__ import annotations
 
 import asyncio
-import base64
+import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,7 +22,20 @@ from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 import socketio
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import FastMCP
+from mcp.types import ImageContent, TextContent
+
+# Write a tail-friendly log to the project root so failures are easy to inspect.
+# Path: <repo>/mcp.log (resolved relative to this file: src/poker_auction_mcp/server.py).
+_LOG_PATH = Path(__file__).resolve().parents[2] / "mcp.log"
+logging.basicConfig(
+    filename=str(_LOG_PATH),
+    filemode="a",
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s %(message)s",
+)
+log = logging.getLogger("poker-auction-mcp")
+log.info("server starting (log file: %s)", _LOG_PATH)
 
 FLAT_EVENTS = {"join-lobby", "request-rejoin", "player-rejoined-as"}
 
@@ -384,6 +398,15 @@ async def join_lobby(
     except asyncio.TimeoutError:
         pass
     client.update_event.clear()
+
+    # The host puts new players in a "ready up" phase that reports
+    # `current_screen=loading` via game-state-requested. From the LLM's
+    # perspective there's nothing actionable to see, but the host is actually
+    # waiting for a `ready` signal before starting the round. Emit it now so
+    # the agent never has to think about this post-join trap.
+    log.info("auto-readying after join (lobby=%s, player=%s)", lobby_id, player_name)
+    await client.emit("ready", {})
+
     return client.state.snapshot()
 
 
@@ -454,7 +477,7 @@ async def get_notifications(clear: bool = True) -> list[dict]:
 @mcp.tool()
 async def fetch_game_state(
     wait_seconds: float = 0.0,
-    timeout_seconds: float = 10.0,
+    timeout_seconds: float = 20.0,
 ) -> list:
     """Look at the game right now: returns the authoritative structured state
     AND a screenshot of the host's viewport so the agent can both reason about
@@ -492,32 +515,46 @@ async def fetch_game_state(
     if wait_seconds > 0:
         await asyncio.sleep(wait_seconds)
 
+    # Step 1: request game state and wait for the reply BEFORE asking for a
+    # screenshot. Sequential ordering avoids two outstanding requests racing
+    # over the same event/attribute slots, and matches how the host appears
+    # to expect dev-tooling requests (one at a time).
     client.game_state_event.clear()
-    client.screenshot_event.clear()
-    client.last_screenshot_b64 = None
-
-    # Fire both requests, then wait for both replies in parallel.
     await client.emit("game-state-requested", {})
-    await client.emit("screenshot-requested", {})
-
-    results = await asyncio.gather(
-        asyncio.wait_for(client.game_state_event.wait(), timeout=timeout_seconds),
-        asyncio.wait_for(client.screenshot_event.wait(), timeout=timeout_seconds),
-        return_exceptions=True,
-    )
-    state_err, screenshot_err = results
-    if isinstance(state_err, BaseException):
+    try:
+        await asyncio.wait_for(client.game_state_event.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
         raise RuntimeError(
             f"No `game-state-update` reply within {timeout_seconds}s. "
             "Make sure you are joined to a lobby."
         )
-    if isinstance(screenshot_err, BaseException) or not client.last_screenshot_b64:
-        # Game state is fine, just no image — return state alone rather than fail.
-        return [client.state.snapshot()]
 
+    # Step 2: now that we have authoritative state, request the screenshot.
+    client.screenshot_event.clear()
+    client.last_screenshot_b64 = None
+    await client.emit("screenshot-requested", {})
+    try:
+        await asyncio.wait_for(client.screenshot_event.wait(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        log.warning(
+            "screenshot-requested timed out after %ss (screen=%s, seq=%s) — returning state without image",
+            timeout_seconds, client.state.screen, client.state.seq,
+        )
+        return [TextContent(type="text", text=json.dumps(client.state.snapshot()))]
+
+    if not client.last_screenshot_b64:
+        log.warning(
+            "screenshot reply arrived but image field was empty (screen=%s) — returning state without image",
+            client.state.screen,
+        )
+        return [TextContent(type="text", text=json.dumps(client.state.snapshot()))]
+
+    # Return as MCP protocol content blocks directly so the client sees a real
+    # image, not a stringified Image wrapper. `last_screenshot_b64` is already
+    # the base64 payload the host sent, so no decode/re-encode round-trip.
     return [
-        client.state.snapshot(),
-        Image(data=base64.b64decode(client.last_screenshot_b64), format="jpeg"),
+        TextContent(type="text", text=json.dumps(client.state.snapshot())),
+        ImageContent(type="image", data=client.last_screenshot_b64, mimeType="image/jpeg"),
     ]
 
 
