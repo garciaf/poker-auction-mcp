@@ -412,6 +412,66 @@ async def join_lobby(
 
 
 @mcp.tool()
+async def reconnect_to_game(
+    lobby_url_or_id: str,
+    player_id_to_rejoin_as: str | None = None,
+    server_url: str | None = None,
+) -> dict:
+    """Reconnect to a game lobby after being disconnected.
+
+    Mirrors the `/reconnect` page in the human client: emits `request-rejoin`
+    to re-enter the lobby room, then `player-rejoined-as` to tell the game
+    authority which player slot to restore.
+
+    Args:
+        lobby_url_or_id: The lobby URL or bare lobby id to rejoin.
+        player_id_to_rejoin_as: The player id this agent held before
+            disconnecting. Defaults to the last known player_id stored in the
+            client state. Must be provided explicitly if the MCP process was
+            restarted (state was lost).
+        server_url: Optional override for the socket.io server URL. If omitted,
+            uses the POKER_SERVER_URL environment variable or the default.
+
+    Returns the current game state after the reconnect handshake completes.
+    """
+    url = server_url or os.environ.get("POKER_SERVER_URL") or DEFAULT_WS_URL
+    lobby_id = _extract_lobby_id(lobby_url_or_id)
+
+    rejoin_player_id = player_id_to_rejoin_as or client.state.player_id
+    if not rejoin_player_id:
+        raise ValueError(
+            "player_id_to_rejoin_as is required when the client state has no stored player_id "
+            "(e.g. after an MCP process restart)."
+        )
+
+    if not client.sio.connected:
+        await client.connect_with_auth(url)
+
+    client.joined_event.clear()
+    await client.sio.emit("request-rejoin", {"lobbyId": lobby_id})
+    try:
+        await asyncio.wait_for(client.joined_event.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        raise RuntimeError("Timed out waiting for joined-lobby ack from server.")
+
+    await client.sio.emit("player-rejoined-as", {
+        "playerId": rejoin_player_id,
+        "lobbyId": lobby_id,
+        "from": client.state.player_id,
+    })
+
+    client.update_event.clear()
+    try:
+        await asyncio.wait_for(client.update_event.wait(), timeout=2)
+    except asyncio.TimeoutError:
+        pass
+    client.update_event.clear()
+
+    log.info("reconnected to lobby=%s as player=%s", lobby_id, rejoin_player_id)
+    return client.state.snapshot()
+
+
+@mcp.tool()
 async def ready() -> dict:
     """Signal that the agent is ready to proceed. Used in the waiting room
     (to start the game) and after viewing dealt hole cards."""
