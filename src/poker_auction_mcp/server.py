@@ -259,9 +259,22 @@ class GameClient:
 
     # --- outgoing --------------------------------------------------------
 
+    def _disconnected_hint(self) -> str:
+        s = self.state
+        if s.lobby_id and s.player_id:
+            return (
+                f"reconnect_to_game(lobby_url_or_id={s.lobby_id!r}, "
+                f"player_id_to_rejoin_as={s.player_id!r})"
+            )
+        if s.lobby_id:
+            return f"reconnect_to_game(lobby_url_or_id={s.lobby_id!r})"
+        return "join_lobby(...) to start a new session"
+
     async def emit(self, event: str, data: dict | None = None, to: str | None = None) -> None:
         if not self.sio.connected:
-            raise RuntimeError("Not connected to game server. Call join_lobby first.")
+            raise RuntimeError(
+                f"Not connected to game server. Call {self._disconnected_hint()}."
+            )
         if event in FLAT_EVENTS:
             await self.sio.emit(event, data or {})
             return
@@ -571,6 +584,15 @@ async def fetch_game_state(
 
     Raises if either reply doesn't arrive in `timeout_seconds`.
     """
+    if not client.sio.connected:
+        return [TextContent(
+            type="text",
+            text=(
+                "DISCONNECTED — not connected to the game server. "
+                f"Call {client._disconnected_hint()} to rejoin, then retry fetch_game_state."
+            ),
+        )]
+
     # Hard cap to keep a single call from blocking for too long.
     wait_seconds = max(0.0, min(wait_seconds, 30.0))
     if wait_seconds > 0:
