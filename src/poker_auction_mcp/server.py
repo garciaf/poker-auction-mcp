@@ -391,6 +391,7 @@ async def join_lobby(
         raise RuntimeError("Timed out waiting for joined-lobby ack from server.")
 
     # JS client emits `new-player` immediately after joined-lobby ack to register name.
+    client.update_event.clear()
     await client.emit("new-player", {"name": player_name})
     # Give the server a moment to broadcast player-joined-lobby / update-player.
     try:
