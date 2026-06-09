@@ -79,7 +79,7 @@ Each joker is single-use. Players can hold multiple jokers and choose when to de
 
 ## Player Economy
 
-Every player receives **50 credits** at the start of each round. Credits are spent bidding on card lots and buying jokers. Only the auction winner pays their bid — losing bidders keep their credits for the next cycle.
+Every player receives **50 credits** at the start of each round, added on top of any credits carried over from previous rounds. Credits are spent bidding on card lots and buying jokers. Only the auction winner pays their bid — losing bidders keep their credits for the next cycle. This means a conservative player accumulates a larger budget over time, but a larger budget only translates into an advantage if it is eventually spent winning auctions that matter.
 
 ---
 
@@ -89,6 +89,7 @@ Your credits are a **fixed budget for the whole round, not for a single auction.
 
 - **Spend everything to win one auction and you are broke for the rest of the round.** You may grab one great card, but you will be unable to bid on — let alone win — any later lot, and you can't buy jokers. One strong card rarely makes a winning 5-card hand on its own.
 - **Hoard credits and win nothing, and you contribute no cards to the board** and have no influence over which community cards appear.
+- **Finishing the round with unspent credits on key auctions is a strategic failure.** Credits do carry over between rounds, and you receive an additional 50 credits at the start of each new round — so saving chips gives you a larger budget later. However, a bigger budget only matters if you win the game, and you win the game by winning rounds, and you win rounds by building strong hands, and you build strong hands by winning the *right* auctions. Hoarding credits across rounds while consistently losing the auctions that would have improved your hand is a losing strategy — the extra chips become meaningless if you never convert them into board control.
 
 **The governing principle: how much you spend on a lot should be directly proportional to how much that lot improves your hand** (using the Poker Hand Rankings above). A card that completes a flush, makes a straight, or pairs your hole cards is worth a large bid; a card that does nothing for your hand is worth little or nothing — let it go. Never let "winning the auction" become the goal in itself; the bid is only justified by the rank your hand gains.
 
@@ -96,8 +97,41 @@ So treat bidding as **budget allocation across the round, not a fight to win the
 
 1. **Score the lot against your hand first.** Estimate the hand rank you'd reach *with* the card vs. *without* it. The bigger that jump (e.g. High Card → Flush is huge; Pair → Two Pair is modest; no change is zero), the more credits the lot justifies. Bid in proportion to that gain.
 2. **Know how many auction cycles likely remain** and roughly divide your remaining credits across them — don't blow your whole stack on the first lot.
-3. **Bid the minimum needed to win**, not the maximum you can afford. In an open auction, raise in small increments; in a silent auction, bid what the card is worth to *your* hand, not your entire balance; in a dutch auction, wait for the price to fall to your valuation rather than grabbing early.
+3. **Bid the minimum needed to win**, not the maximum you can afford. In an open auction, raise in small increments; in a dutch auction, wait for the price to fall to your valuation rather than grabbing early.
 4. **Reserve credits for jokers and late-round lots.** Keeping a small reserve lets you snipe a pivotal final card or deploy a joker (e.g. Block Bid) at a decisive moment.
 5. **Walking away is a valid move.** Conceding a lot that doesn't raise your hand rank preserves credits and keeps you competitive in the auctions that actually decide the round.
 
 **Bottom line:** winning the round correlates with winning the *right* auctions efficiently — the ones that raise your hand rank the most per credit — not with winning every auction. Pace your spending so you can still compete in the final, often most important, cycles.
+
+---
+
+## Bidding Intelligence — Read the Room
+
+Your bid does not exist in isolation. To win efficiently you must consider **what opponents can still spend** and **how much they need the lot** — not just what the card is worth to your own hand.
+
+### Track Opponent Balances
+
+Every credit an opponent spends in a previous auction is a credit they cannot spend in this one. Before each auction, estimate how much each opponent has left:
+- An opponent who has already won several auctions is likely running low. You may be able to outbid them cheaply.
+- An opponent who has not bid on anything yet still has their full 50-credit budget and can outspend you if they choose to.
+- If you are the only player who actually needs the current lot (e.g. a card that only completes *your* flush draw), you can bid modestly — no one will pay a high price for a card that does nothing for them. If multiple players are chasing the same hand type from the lot, expect a contested auction and budget accordingly.
+
+### Card Selection Gives You Board Control
+
+Remember: the auction winner does not have to take all three cards — they **choose which card(s) go to the community board** and return the rest to the deck. Winning an auction lets you:
+- Put the card you need on the board.
+- **Deny opponents a card they need** by choosing not to place it (it goes back to the deck, out of play).
+
+When the lot contains a card that would significantly help a leading opponent, factor that denial value into your bid. Paying extra to stop someone from getting a flush-completing card can be worth more than the card is worth to your own hand.
+
+### Silent Auction — One Bid, No Second Chances
+
+The silent auction is the most demanding format because **your single sealed bid is final**. You cannot react to what others bid. This requires a different thought process before submitting:
+
+1. **Decide your true valuation first.** Ask: what is the maximum I would be willing to pay for this lot before I'd rather let it go? That is your ceiling. Do not submit a number above it, but do not submit significantly below it either.
+2. **Estimate opponent bids, not just opponent balances.** Think about whether your opponents *need* this lot. A card that only helps you is unlikely to attract high bids from others — you can win it for less. A card that helps everyone (e.g. a high-rank community card good for any hand) will attract competitive bids — you need to bid near your ceiling to have a real chance.
+3. **Do not underbid on a must-have card to save chips.** If losing this auction means you have no path to a strong hand, bid what it takes to win. The chips you "save" by underbidding are worthless if you lose the lot and lose the round.
+4. **Do not overbid on a nice-to-have card.** If the card offers a modest improvement and you do not need it to stay competitive, a mid-range bid is enough. Winning a low-value lot at full price cripples your budget for more important auctions later.
+5. **Consider the number of remaining auction cycles and rounds.** Credits carry over and grow by 50 each round, so there is always a future to save for. But that future value is zero if you lose the current round by skipping a pivotal auction. If this lot is the decisive one for your hand, bid to win it — the credits you save by underbidding and losing are worth less than the round you throw away.
+
+**Silent auction summary:** think of it as placing a bet, not opening a negotiation. You will not get a second chance. Commit to a number that reflects both the card's value to *your* hand and the likely competition from opponents — then do not second-guess it.
